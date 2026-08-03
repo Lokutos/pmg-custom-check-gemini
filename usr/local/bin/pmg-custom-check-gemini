@@ -16,6 +16,18 @@ MAX_BODY_CHARS = 2500
 CACHE_FILE = "/tmp/pmg_gemini_models.cache"
 CACHE_TTL = 86400  # 24 Stunden Cache-Dauer in Sekunden
 
+def run_pmgsh(args):
+    """
+    Führt pmgsh mit den gegebenen Argumenten aus.
+    Fällt automatisch auf 'sudo -n pmgsh' zurück, falls pmg-smtp-filter als nicht-root Benutzer läuft.
+    """
+    cmd = ["pmgsh"] + args
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    if res.returncode != 0 and "please run as root" in res.stderr.lower():
+        cmd_sudo = ["sudo", "-n", "pmgsh"] + args
+        res = subprocess.run(cmd_sudo, capture_output=True, text=True, timeout=5)
+    return res
+
 def get_allowed_targets_from_pmg_db():
     """
     Liest aus der Proxmox PMG API (via 'pmgsh') alle E-Mail-Adressen und Domains 
@@ -24,11 +36,10 @@ def get_allowed_targets_from_pmg_db():
     targets = set()
     try:
         # 1. Alle Objektgruppen via pmgsh abfragen (Standard Text/Perl-Dump Output)
-        cmd_groups = ["pmgsh", "get", "/config/ruledb/who"]
-        res_groups = subprocess.run(cmd_groups, capture_output=True, text=True, timeout=5)
+        res_groups = run_pmgsh(["get", "/config/ruledb/who"])
         
         if res_groups.returncode != 0:
-            syslog.syslog(syslog.LOG_ERR, f"pmgsh Gruppen-Abfrage Fehler: {res_groups.stderr}")
+            syslog.syslog(syslog.LOG_ERR, f"pmgsh Gruppen-Abfrage Fehler: {res_groups.stderr.strip()}")
             return targets
 
         group_id = None
@@ -55,8 +66,7 @@ def get_allowed_targets_from_pmg_db():
             return targets
 
         # 2. Inhalt der gefundenen Who-Objektgruppe abfragen
-        cmd_content = ["pmgsh", "get", f"/config/ruledb/who/{group_id}/objects"]
-        res_content = subprocess.run(cmd_content, capture_output=True, text=True, timeout=5)
+        res_content = run_pmgsh(["get", f"/config/ruledb/who/{group_id}/objects"])
 
         if res_content.returncode == 0:
             # Extrahiere Domains / Mailadressen aus den Feldern "domain", "email", "info", "descr"

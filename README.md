@@ -24,13 +24,17 @@ Ein intelligentes Custom Check Script für **Proxmox Mail Gateway (PMG)** zur KI
 
 ## 🚀 Installation & Einrichtung
 
-### 1. API-Key konfigurieren
+### 1. API-Key via Systemd Override konfigurieren
 
-Hinterlege deinen Google Gemini API-Key in `/etc/environment`:
+Erstelle den Systemd-Override-Ordner und hinterlege deinen Google Gemini API-Key in `/etc/systemd/system/pmg-smtp-filter.service.d/pmg-custom-check-gemini.conf`:
 
 ```bash
-echo 'GEMINI_API_KEY="DEIN_GEMINI_API_KEY_HIER"' >> /etc/environment
-source /etc/environment
+mkdir -p /etc/systemd/system/pmg-smtp-filter.service.d/
+cat << 'EOF' > /etc/systemd/system/pmg-smtp-filter.service.d/pmg-custom-check-gemini.conf
+[Service]
+Environment="GEMINI_API_KEY=DEIN_GEMINI_API_KEY_HIER"
+EOF
+systemctl daemon-reload
 ```
 
 ### 2. Skript herunterladen und installieren
@@ -44,11 +48,12 @@ chmod +x /usr/local/bin/pmg-custom-check-gemini
 
 ### 3. PMG Custom Check aktivieren
 
-Öffne `/etc/pmg/pmg.conf` und füge den `custom_check` Parameter in die Sektion `admin` ein:
+Öffne `/etc/pmg/pmg.conf` und aktiviere `custom_check` sowie `custom_check_path` in der Sektion `admin`:
 
 ```ini
 section: admin
-        custom_check /usr/local/bin/pmg-custom-check-gemini
+        custom_check 1
+        custom_check_path /usr/local/bin/pmg-custom-check-gemini
 ```
 
 Schließe die Konfiguration ab und starte den PMG Filter-Dienst neu:
@@ -88,6 +93,20 @@ pmg-custom-check: PMG Who-Object 'pmg-custom-check-gemini' (ID 32) geladen: exam
 pmg-custom-check: Gemini AI Check aktiv für Empfänger 'user@example.com'
 pmg-custom-check: Analyse erfolgreich (gemini-2.0-flash) | Absender: info@bad-spammer.com | Score: 8.5 | Grund: Phishing-Versuch mit vorgetäuschtem Passwort-Reset.
 pmg-smtp-filter: hits=CustomCheck(8.5)
+```
+
+---
+
+## 🛠 Fehlerbehebung (Troubleshooting)
+
+### `pmgsh Gruppen-Abfrage Fehler: please run as root`
+Falls `pmg-smtp-filter` in deiner Umgebung als unprivilegierter Dienstbenutzer (z. B. `postfix`) ausgeführt wird, kann `pmgsh` die PMG API nicht direkt ohne Root-Rechte abfragen. Das Skript versucht in diesem Fall automatisch ein Fallback über `sudo -n pmgsh`.
+
+Erstelle bei diesem Fehler die Datei `/etc/sudoers.d/pmg-custom-check`, um `pmgsh` ohne Passworteingabe zu erlauben:
+
+```bash
+echo 'postfix ALL=(ALL) NOPASSWD: /usr/bin/pmgsh' > /etc/sudoers.d/pmg-custom-check
+chmod 0440 /etc/sudoers.d/pmg-custom-check
 ```
 
 ---
