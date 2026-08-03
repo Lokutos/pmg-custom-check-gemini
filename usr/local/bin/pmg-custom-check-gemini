@@ -26,6 +26,8 @@ def run_pmgsh(args):
     if res.returncode != 0 and "please run as root" in res.stderr.lower():
         cmd_sudo = ["sudo", "-n", "pmgsh"] + args
         res = subprocess.run(cmd_sudo, capture_output=True, text=True, timeout=5)
+        if res.returncode != 0 and "no new privileges" in res.stderr.lower():
+            syslog.syslog(syslog.LOG_ERR, "pmgsh Gruppen-Abfrage Fehler: 'NoNewPrivileges=yes' in systemd verhindert sudo. Bitte 'NoNewPrivileges=no' in /etc/systemd/system/pmg-smtp-filter.service.d/pmg-custom-check-gemini.conf eintragen und 'systemctl daemon-reload && systemctl restart pmg-smtp-filter' ausführen.")
     return res
 
 def get_allowed_targets_from_pmg_db():

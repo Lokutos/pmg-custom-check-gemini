@@ -32,6 +32,7 @@ Erstelle den Systemd-Override-Ordner und hinterlege deinen Google Gemini API-Key
 mkdir -p /etc/systemd/system/pmg-smtp-filter.service.d/
 cat << 'EOF' > /etc/systemd/system/pmg-smtp-filter.service.d/pmg-custom-check-gemini.conf
 [Service]
+NoNewPrivileges=no
 Environment="GEMINI_API_KEY=DEIN_GEMINI_API_KEY_HIER"
 EOF
 systemctl daemon-reload
