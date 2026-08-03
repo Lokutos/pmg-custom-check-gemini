@@ -90,7 +90,10 @@ def get_allowed_targets_from_pmg_db():
 
 def is_domain_allowed_and_active(msg):
     """
-    Prüft, ob einer der Empfänger (To, Cc, Envelope-To) in der PMG GUI Objektgruppe 'pmg-custom-check-gemini' enthalten ist.
+    Prüft, ob einer der Empfänger (aus E-Mail-Headern wie Envelope-To, To, Cc, Received)
+    in der PMG GUI Objektgruppe 'pmg-custom-check-gemini' enthalten ist.
+    Laut offizieller Proxmox Doku (API v1) übergibt Proxmox nur 'v1' und den Dateipfad,
+    weshalb alle Empfänger-Informationen aus den E-Mail-Headern gelesen werden müssen.
     """
     allowed_targets = get_allowed_targets_from_pmg_db()
     if not allowed_targets:
@@ -98,20 +101,21 @@ def is_domain_allowed_and_active(msg):
         return False
 
     recipients = []
-    
-    # 1. Versuche Envelope-To / Delivered-To / X-Envelope-To zu lesen
-    for hdr in ['Envelope-To', 'X-Envelope-To', 'Delivered-To']:
-        val = msg.get(hdr)
-        if val:
-            recipients.append(str(val).strip().lower())
 
-    # 2. Aus 'To' und 'Cc' Adressen extrahieren
-    for hdr in ['To', 'Cc']:
-        val = msg.get(hdr)
-        if val:
-            # Extrahiere E-Mail-Adressen aus Header (z.B. "Name <user@domain.com>")
+    # 1. Aus allen Empfänger-Headern lesen
+    header_list = [
+        'Envelope-To', 'X-Envelope-To', 'Delivered-To', 'X-Original-To',
+        'To', 'Cc', 'Apparently-To', 'Resent-To', 'Resent-Cc'
+    ]
+    for hdr in header_list:
+        for val in msg.get_all(hdr, []):
             found_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', str(val))
             recipients.extend([e.lower() for e in found_emails])
+
+    # 2. Aus Received-Headern lesen (z.B. "for <user@domain.com>")
+    for r_hdr in msg.get_all('Received', []):
+        matches = re.findall(r'for\s+<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>', str(r_hdr), re.IGNORECASE)
+        recipients.extend([e.lower() for e in matches])
 
     recipients = list(set(recipients))
 
@@ -341,7 +345,7 @@ def main():
         with open(mail_path, 'rb') as f:
             msg = email.message_from_binary_file(f, policy=policy.default)
 
-        # 2-Stufen-Filter: Prüft Relay Domain & PMG GUI "pmg-custom-check-gemini" Gruppe
+        # 2-Stufen-Filter: Prüft PMG GUI "pmg-custom-check-gemini" Gruppe
         if not is_domain_allowed_and_active(msg):
             print("OK")
             sys.exit(0)
