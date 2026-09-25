@@ -414,18 +414,11 @@ def main():
 
         score, reason = analyze_with_gemini(subject, sender, body)
 
-        # Wenn ein Grund vorhanden ist, fügen wir einen Header in die Spool-Mail ein oder loggen ihn
+        # Wenn ein Score ermittelt wurde, geben wir diesen im PMG-Protokoll zurück.
+        # PMG übernimmt SCORE direkt in die SpamAssassin-Bewertung als 'CustomCheck(score)'
+        # und fügt dies in die X-Spam-Status Header der ausgelieferten E-Mail ein.
         if score > 0.0:
             syslog.syslog(syslog.LOG_INFO, f"Gemini AI Score: {score:.1f} | Grund: {reason}")
-            # Header in E-Mail einfügen
-            msg['X-Gemini-AI-Score'] = str(score)
-            msg['X-Gemini-AI-Reason'] = reason
-            try:
-                with open(mail_path, 'wb') as f:
-                    f.write(msg.as_bytes())
-            except Exception as e:
-                syslog.syslog(syslog.LOG_WARNING, f"Konnte Gemini-Reason Header nicht in Datei schreiben: {e}")
-
             print(f"SCORE: {score:.1f}")
         else:
             print("OK")
