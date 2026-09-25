@@ -145,9 +145,12 @@ def is_domain_allowed_and_active(msg):
 def get_active_flash_models(api_key):
     """
     Fragt die Google Gemini API live (mit Cache) nach allen derzeit verfügbaren Modellen ab,
-    filtert auf 'flash' Modelle mit 'generateContent' Support und sortiert sie absteigend nach Version.
-    Keine festen Fallback-Namen!
+    filtert auf reine Text-Flash-Modelle mit 'generateContent' Support und sortiert sie absteigend nach Version.
+    Schließt Audio-, TTS- und Bild-Modelle konsequent aus.
     """
+    preferred_env = os.environ.get("GEMINI_MODEL")
+    preferred_models = [m.strip() for m in preferred_env.split(",") if m.strip()] if preferred_env else []
+
     if os.path.exists(CACHE_FILE):
         try:
             mtime = os.path.getmtime(CACHE_FILE)
@@ -155,7 +158,8 @@ def get_active_flash_models(api_key):
                 with open(CACHE_FILE, "r") as f:
                     models = [line.strip() for line in f if line.strip()]
                     if models:
-                        return models
+                        result = [m for m in preferred_models if m not in models] + models
+                        return result
         except Exception as e:
             syslog.syslog(syslog.LOG_WARNING, f"Cache-Lesefehler: {e}")
 
@@ -167,38 +171,89 @@ def get_active_flash_models(api_key):
             models = data.get("models", [])
             
             candidates = []
+            # Unerwünschte Modelltypen: TTS, Bildgenerierung, Audio, Einbettungen, Multimodal-Preview
+            excluded_keywords = ["tts", "image", "audio", "omni", "imagen", "embedding", "aqa", "vision"]
+
             for m in models:
                 name = m.get("name", "").replace("models/", "")
+                name_lower = name.lower()
                 methods = m.get("supportedGenerationMethods", [])
 
                 # Filter: Muss generateContent unterstützen und 'flash' im Namen haben
-                if "generateContent" in methods and "flash" in name.lower():
-                    # Schließe ungeeignete Varianten aus (z.B. nur Bild-Generierung oder Audio)
-                    if not any(x in name.lower() for x in ["imagen", "text-embedding", "aqa"]):
-                        # Extrahiere Versionsnummer für korrekte Sortierung (z.B. 2.0 > 1.5 > 1.0)
-                        v_match = re.search(r'gemini-(\d+(?:\.\d+)?)-flash', name.lower())
-                        version_val = float(v_match.group(1)) if v_match else 0.0
-                        
-                        # Bevorzuge stabile Releases gegenüber experimental/preview
-                        is_experimental = 1 if any(x in name.lower() for x in ["exp", "preview"]) else 2
-                        
-                        candidates.append((is_experimental, version_val, name))
+                if "generateContent" in methods and "flash" in name_lower:
+                    # Strikter Ausschluss nicht-textbasierter Modelle
+                    if any(bad in name_lower for bad in excluded_keywords):
+                        continue
+
+                    # Extrahiere Versionsnummer (z.B. gemini-3.8-flash, gemini-3.5-flash-lite)
+                    v_match = re.search(r'gemini-(\d+(?:\.\d+)?)', name_lower)
+                    version_val = float(v_match.group(1)) if v_match else 0.0
+
+                    # 'latest' ohne explizite Zahl als Version 3.0 einstufen (hinter 3.8/3.7/3.6, aber vor alten)
+                    if "latest" in name_lower and version_val == 0.0:
+                        version_val = 3.0
+
+                    # Bevorzuge stabile Releases gegenüber experimental/preview
+                    is_experimental = 1 if any(x in name_lower for x in ["exp", "preview"]) else 2
+                    
+                    # Bevorzuge Standard-Flash vor Lite (Lite als Fallback dahinter)
+                    is_full_flash = 2 if "lite" not in name_lower else 1
+
+                    candidates.append((is_experimental, version_val, is_full_flash, name))
 
             if candidates:
-                # Sortiere erst nach Stabilität (stabile höher), dann nach Versionsnummer absteigend
-                candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-                sorted_names = [item[2] for item in candidates]
+                # Sortiere:
+                # 1. Stabilität (stabil > experimental)
+                # 2. Versionsnummer absteigend (3.8 > 3.7 > 3.6 > ...)
+                # 3. Flash vor Flash-Lite
+                candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+                sorted_names = [item[3] for item in candidates]
 
-                with open(CACHE_FILE, "w") as f:
-                    f.write("\n".join(sorted_names))
+                try:
+                    with open(CACHE_FILE, "w") as f:
+                        f.write("\n".join(sorted_names))
+                except Exception as ce:
+                    syslog.syslog(syslog.LOG_WARNING, f"Konnte Cache-Datei nicht schreiben: {ce}")
 
-                syslog.syslog(syslog.LOG_INFO, f"Gemini Modelle dynamisch von API ermittelt: {', '.join(sorted_names)}")
-                return sorted_names
+                syslog.syslog(syslog.LOG_INFO, f"Gemini Text-Modelle dynamisch ermittelt: {', '.join(sorted_names)}")
+                result = [m for m in preferred_models if m not in sorted_names] + sorted_names
+                return result
 
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f"Fehler bei dynamischer Modell-Abfrage von API: {e}")
 
-    return []
+    return preferred_models
+
+def get_api_key():
+    """Liest den Gemini API-Key aus der Umgebung, der /etc/pmg/gemini.conf oder dem Systemd-Override."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        return api_key
+
+    # Fallback 1: /etc/pmg/gemini.conf
+    conf_file = "/etc/pmg/gemini.conf"
+    if os.path.exists(conf_file):
+        try:
+            with open(conf_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("GEMINI_API_KEY="):
+                        return line.split("=", 1)[1].strip('"\'')
+        except Exception:
+            pass
+
+    # Fallback 2: Systemd Override
+    override_file = "/etc/systemd/system/pmg-smtp-filter.service.d/pmg-custom-check-gemini.conf"
+    if os.path.exists(override_file):
+        try:
+            with open(override_file, "r") as f:
+                m = re.search(r'GEMINI_API_KEY=["\']?([^\n"\']+)', f.read())
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+
+    return None
 
 def extract_email_body(msg):
     """Extrahiert den Plaintext oder bereinigt HTML, falls kein Plaintext vorhanden ist."""
@@ -237,15 +292,15 @@ def extract_email_body(msg):
 
 def analyze_with_gemini(subject, sender, body):
     """Sendet E-Mail-Daten an Gemini mit erzwingbarer JSON-Struktur."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        syslog.syslog(syslog.LOG_ERR, "GEMINI_API_KEY Umgebungsvariable fehlt!")
-        return 0.0
+        syslog.syslog(syslog.LOG_ERR, "GEMINI_API_KEY Umgebungsvariable oder Konfiguration fehlt!")
+        return 0.0, ""
 
     models_to_try = get_active_flash_models(api_key)
     if not models_to_try:
         syslog.syslog(syslog.LOG_WARNING, "Keine aktiven Gemini-Modelle verfügbar, überspringe Analyse.")
-        return 0.0
+        return 0.0, ""
 
     prompt = f"""
 Du bist ein E-Mail-Sicherheitssystem auf einem Mail Gateway.
@@ -282,8 +337,8 @@ Inhalt:
     }
     data = json.dumps(payload).encode('utf-8')
 
-    # Wir versuchen bis zu 5 Modelle aus der dynamischen API-Liste
-    for model_name in models_to_try[:5]:
+    # Wir versuchen bis zu 8 Modelle aus der dynamischen Text-Modell-Liste
+    for model_name in models_to_try[:8]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         
         try:
@@ -294,7 +349,7 @@ Inhalt:
                 method='POST'
             )
 
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 result = json.loads(response.read().decode('utf-8'))
                 raw_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
                 
@@ -313,14 +368,15 @@ Inhalt:
             except Exception:
                 pass
             
+            # 400 = Nicht unterstützt / JSON-Schema ungültig für Modell
             # 404 = Modellname existiert/unterstützt den Endpoint nicht
             # 429 = Rate Limit / Overloaded
             # 503 = Service Unavailable
-            if e.code in [404, 429, 503]:
-                syslog.syslog(syslog.LOG_WARNING, f"Modell {model_name} nicht verfügbar ({e.code}), versuche nächstes verfügbares Modell...")
+            if e.code in [400, 404, 429, 503]:
+                syslog.syslog(syslog.LOG_WARNING, f"Modell {model_name} nicht verfügbar ({e.code}), versuche nächstes Modell...")
                 continue
             else:
-                syslog.syslog(syslog.LOG_ERR, f"API HTTP-Fehler ({model_name}): {e.code} - {e.reason} | Detail: {err_msg}")
+                syslog.syslog(syslog.LOG_ERR, f"API HTTP-Fehler ({model_name}): {e.code} - {e.reason} | Detail: {err_msg[:120]}")
                 continue
 
         except Exception as e:

@@ -100,13 +100,13 @@ pmg-smtp-filter: hits=CustomCheck(8.5)
 
 ## 🛠 Fehlerbehebung (Troubleshooting)
 
-### `pmgsh Gruppen-Abfrage Fehler: please run as root`
-Falls `pmg-smtp-filter` in deiner Umgebung als unprivilegierter Dienstbenutzer (z. B. `postfix`) ausgeführt wird, kann `pmgsh` die PMG API nicht direkt ohne Root-Rechte abfragen. Das Skript versucht in diesem Fall automatisch ein Fallback über `sudo -n pmgsh`.
+### `pmgsh Gruppen-Abfrage Fehler: please run as root` oder `sudo: a password is required`
+Falls `pmg-smtp-filter` als unprivilegierter Dienstbenutzer (`pmg-smtp-filter`) ausgeführt wird, kann `pmgsh` die PMG API nicht direkt ohne Root-Rechte abfragen. Das Skript versucht in diesem Fall automatisch ein Fallback über `sudo -n pmgsh`.
 
 Erstelle bei diesem Fehler die Datei `/etc/sudoers.d/pmg-custom-check`, um `pmgsh` ohne Passworteingabe zu erlauben:
 
 ```bash
-echo 'postfix ALL=(ALL) NOPASSWD: /usr/bin/pmgsh' > /etc/sudoers.d/pmg-custom-check
+echo 'pmg-smtp-filter ALL=(ALL) NOPASSWD: /usr/bin/pmgsh' > /etc/sudoers.d/pmg-custom-check
 chmod 0440 /etc/sudoers.d/pmg-custom-check
 ```
 
